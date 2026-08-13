@@ -1,0 +1,11 @@
+{
+  "name": "nugsauras",
+  "private": true,
+  "description": "Static checks for the nugsAuras addon. Not shipped to players.",
+  "scripts": {
+    "test": "node .tools/run.js"
+  },
+  "dependencies": {
+    "luaparse": "^0.3.1"
+  }
+}

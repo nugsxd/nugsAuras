@@ -1,0 +1,29 @@
+# 12.1 only, and that is not a packaging oversight. The display is built on the
+# AuraContainer frame type, which does not exist on 12.0.7 - on that client the
+# addon loads and draws nothing. Listing 120007 here would ship that silently.
+## Interface: 120100
+## Title: nugsAuras
+## Notes: Free-floating buff and debuff groups you place wherever you want them,|ninstead of bolted to a unit frame or a nameplate.|nRequires patch 12.1.|nSupports LibSharedMedia fonts.|nCreated by nugs.
+## Author: nugs
+## Version: 0.6.31
+## IconTexture: Interface\AddOns\nugsAuras\icon
+
+# NOTE: if the addon list shows a blank icon, this BLP is not loading on your
+# client. Swap the line above back to a stock game texture and nothing else breaks:
+# ## IconTexture: Interface\Icons\spell_shadow_shadowwordpain
+## SavedVariables: nugsAurasDB
+## SavedVariablesPerCharacter: nugsAurasCharDB
+## X-Author: nugs
+## X-Copyright: Copyright (c) 2026 nugs. All Rights Reserved.
+## X-License: All Rights Reserved
+## X-Category: Buffs & Debuffs
+
+# NOTE: bump the Interface number above to match your current retail patch if the
+# game flags this addon as "out of date". Find it with:  /run print((select(4,GetBuildInfo())))
+
+## X-Curse-Project-ID: 1650460
+
+Core.lua
+Display.lua
+Options.lua
+Minimap.lua
