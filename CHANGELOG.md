@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.32
+
+- Grouped under a **nugsAddons** category in the game's AddOns list, so the whole
+  set folds up together instead of scattering through the alphabet.
+
 ## 0.6.31
 
 **Rebuilt on patch 12.1's aura engine. This version requires 12.1.**
