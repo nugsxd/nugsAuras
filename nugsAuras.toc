@@ -6,7 +6,7 @@
 ## Category: nugsAddons
 ## Notes: Free-floating buff and debuff groups you place wherever you want them,|ninstead of bolted to a unit frame or a nameplate.|nRequires patch 12.1.|nSupports LibSharedMedia fonts.|nCreated by nugs.
 ## Author: nugs
-## Version: 0.6.32
+## Version: 0.7.8
 ## IconTexture: Interface\AddOns\nugsAuras\icon
 
 # NOTE: if the addon list shows a blank icon, this BLP is not loading on your

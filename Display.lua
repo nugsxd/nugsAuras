@@ -1010,6 +1010,12 @@ function NAU.EngineTest()
     if NAU._engineTest then
         NAU._engineTest:Hide()
         NAU._engineTest = nil
+        -- The probe's own furniture lives outside that container, so hiding it is not
+        -- enough - a ticker left running would keep firing forever and the red square
+        -- would sit on screen after the test was switched off.
+        if NAU._missTicker then NAU._missTicker:Cancel(); NAU._missTicker = nil end
+        if NAU._missWatch then NAU._missWatch:UnregisterAllEvents(); NAU._missWatch = nil end
+        if NAU._missTex then NAU._missTex:GetParent():Hide(); NAU._missTex = nil end
         NAU.Print("engine test off.")
         return
     end
@@ -1054,6 +1060,74 @@ function NAU.EngineTest()
         t:SetColorTexture(0.35, 1.00, 0.45, 0.9)
         slot:ClearAllPoints()
         slot:SetPoint("CENTER", UIParent, "CENTER", 0, -280)
+    end
+
+    -- THE INVERSE TEST. Can a "this aura is MISSING" icon be driven without ever
+    -- reading anything?
+    --
+    -- The engine shows its button when the aura is present. Asking that button
+    -- whether it is shown gives back a SECRET boolean - untestable, but not useless:
+    -- SetAlphaFromBoolean is the display sink for exactly this kind of value, and
+    -- feeding it inverted (0 when shown, 1 when hidden) makes a texture that appears
+    -- precisely when the aura does not.
+    --
+    -- If this works, a missing-auras display needs no aura reads at all, which means
+    -- it works in combat and on a target - the two places a read might be refused.
+    --
+    -- Three things have to hold and each is reported separately, because a failure in
+    -- any one of them means something different:
+    --   1. IsShown on a bound button returns rather than raising a forbidden access
+    --   2. SetAlphaFromBoolean accepts that value
+    --   3. it keeps up as the aura comes and goes (re-applied on UNIT_AURA below)
+    if okS and slot then
+        local holder = CreateFrame("Frame", nil, UIParent)
+        holder:SetSize(40, 40)
+        holder:SetPoint("CENTER", UIParent, "CENTER", 60, -280)
+        holder:SetFrameStrata("HIGH")
+        local miss = holder:CreateTexture(nil, "OVERLAY")
+        miss:SetAllPoints()
+        miss:SetColorTexture(1.00, 0.30, 0.30, 0.9)
+        NAU._missTex = miss
+
+        local function Reapply()
+            local okShown, shown = pcall(slot.IsShown, slot)
+            if not okShown then
+                NAU._missReport = "IsShown FORBIDDEN: " .. tostring(shown)
+                return
+            end
+            if not miss.SetAlphaFromBoolean then
+                NAU._missReport = "SetAlphaFromBoolean missing on this client"
+                return
+            end
+            -- Inverted on purpose: present -> 0, absent -> 1.
+            local okA, errA = pcall(miss.SetAlphaFromBoolean, miss, shown, 0, 1)
+            NAU._missReport = okA and ("ok (secret=" ..
+                tostring(issecretvalue and issecretvalue(shown) or "?") .. ")")
+                or ("SetAlphaFromBoolean THREW: " .. tostring(errA))
+        end
+        Reapply()
+
+        local watch = CreateFrame("Frame")
+        watch:RegisterUnitEvent("UNIT_AURA", "player")
+        watch:SetScript("OnEvent", Reapply)
+        NAU._missWatch = watch
+
+        -- SetAlphaFromBoolean evaluates ONCE, at the moment it is called - it is a
+        -- sink, not a binding. So the alpha only tracks the aura if something
+        -- re-applies it, and UNIT_AURA alone is not enough: the first call runs
+        -- before the engine has bound anything, and if no aura then changes, that
+        -- wrong first answer is the one that stays on screen. Which is exactly what
+        -- the red square did.
+        --
+        -- A ticker here is for the probe, to prove the value really does follow the
+        -- aura. The shipped version would re-apply on UNIT_AURA plus once shortly
+        -- after a group is built, not poll.
+        if C_Timer and C_Timer.NewTicker then
+            NAU._missTicker = C_Timer.NewTicker(0.2, Reapply)
+        end
+        NAU.Print("inverse test: " .. tostring(NAU._missReport))
+        NAU.Print("  RED square right of the green one should be visible only when the "
+                  .. "green one is NOT. Cancel your buffs to check it flips.")
     end
 
     NAU._engineTest = c
@@ -1159,7 +1233,11 @@ local function FilterString(g)
     -- This restores a decision the addon had already made before the rewrite, in the
     -- old spell-list path: "the explicit list is the filter, so only kind and
     -- ownership narrow the pool".
-    if g.spellMode == "only" and ListedSpells(g) then
+    -- "missing" narrows the same way "only" does, and for the same reason: the
+    -- sensors behind it are per-spell, so a category could veto a spell the player
+    -- named and that dot would then never register as present - the icon would sit
+    -- there claiming it was missing while it ticked away on the target.
+    if (g.spellMode == "only" or g.spellMode == "missing") and ListedSpells(g) then
         local parts = { (g.kind == "HARMFUL") and "HARMFUL" or "HELPFUL" }
         if g.mineOnly then parts[#parts + 1] = "PLAYER" end
         local s = table.concat(parts, "|")
@@ -1246,7 +1324,8 @@ local function LookSignature(g)
     local function rgba(t) return t and table.concat(t, ",") or "" end
     return table.concat({
         g.size or 0, g.zoomIcon and 1 or 0,
-        g.showSwipe and 1 or 0, g.showTimer and 1 or 0, g.showStacks and 1 or 0,
+        g.showSwipe and 1 or 0, g.reverseSwipe and 1 or 0,
+        g.showTimer and 1 or 0, g.showStacks and 1 or 0,
         g.showBorder and 1 or 0, g.borderSize or 0, rgba(g.borderColor),
         g.font or "", g.fontSize or 0, g.fontOutline or "",
         rgba(g.stackColor), rgba(g.timerColor),
@@ -1369,6 +1448,12 @@ local function BuildRegions(b, g)
     if g then
         b.icon:SetTexCoord(g.zoomIcon and 0.07 or 0, g.zoomIcon and 0.93 or 1,
                            g.zoomIcon and 0.07 or 0, g.zoomIcon and 0.93 or 1)
+
+        -- Which way the swipe runs, set BEFORE SetDurationCooldown hands this widget
+        -- over. The engine takes the Cooldown and Shown aspects on binding, so this
+        -- is the last moment it can be changed - which is why toggling the setting
+        -- rebuilds the container rather than adjusting the existing buttons.
+        b.cd:SetReverse(g.reverseSwipe and true or false)
 
         if g.showBorder then
             local s = g.borderSize or 1
@@ -1515,6 +1600,219 @@ local function AnyListedSpellUp(g, ids)
     return false
 end
 
+--------------------------------------------------------------------------------
+-- "Only what is missing"
+--
+-- The inverse of everything else here, and it works without reading a single aura.
+--
+-- The engine can only draw what EXISTS - there is no binding for an aura that is
+-- absent - so the obvious implementation is to ask "is this spell on the unit" and
+-- draw when the answer is no. That question is a read, and a read can be refused;
+-- on a target during a fight, which is the only time a dot reminder matters, it
+-- might always come back empty and light up every icon.
+--
+-- So nothing asks. Instead:
+--
+--   1. An engine slot is created per listed spell, filtered to that spell. It is
+--      given no regions at all, so it draws nothing - it exists purely so the engine
+--      will track that spell's presence for us.
+--   2. We draw our own icon for that spell.
+--   3. The slot's IsShown() is a SECRET boolean. It cannot be tested, but it can be
+--      handed to SetAlphaFromBoolean, which is the display sink for exactly this -
+--      and handed over INVERTED: alpha 0 when the aura is present, 1 when it is not.
+--
+-- Nothing is ever compared, so no restriction applies. The engine decides presence
+-- and a widget does the arithmetic, which is the same principle as letting a
+-- StatusBar count down a secret duration.
+--
+-- Measured working before this was built: IsShown on a bound button returns rather
+-- than raising a forbidden access, it really is secret, and the sink accepts it.
+--------------------------------------------------------------------------------
+
+local function MissingSpells(g)
+    if g.spellMode ~= "missing" then return nil end
+    return ListedSpells(g)
+end
+
+-- Everything this mode puts on screen, taken back down.
+--
+-- Needed because the icons are plain frames of OURS and the sensors are engine slots,
+-- and neither goes away on its own when the mode changes. Switching to another mode
+-- left both sitting there until a reload, which reads as the addon ignoring the
+-- setting - the same class of bug as a group and its slots both staying live.
+local function ParkMissing(id, c)
+    local f = frames[id]
+    if not f then return end
+    for _, icon in pairs(f.missIcons or {}) do icon:Hide() end
+    if c and f.missSpell then
+        for i in pairs(f.missSpell) do
+            pcall(c.SetAuraSlotCandidateFilters, c, "naum" .. id .. "s" .. i, DORMANT)
+            f.missSpell[i] = nil
+        end
+    end
+end
+
+-- SetAlphaFromBoolean evaluates ONCE, when called - it is a sink, not a binding. So
+-- the alpha only follows the aura if something re-applies it, and the first call
+-- happens before the engine has bound anything. Re-applied on UNIT_AURA and shortly
+-- after a group is built, which covers both.
+-- Every outcome is recorded rather than swallowed. "The icons stay up in combat" has
+-- several possible causes that look identical on screen - the read being refused, the
+-- sink refusing the value, or this simply never running - and a bare pcall hides
+-- which. That mistake has been made enough times in this file already.
+NAU.unitStamp = {}
+NAU.missReport = { runs = 0, isShownOK = 0, isShownThrew = 0,
+                   sinkOK = 0, sinkThrew = 0, lastInCombat = false, lastErr = nil }
+
+-- Nothing to refresh any more: the inversion is done by stacking, and the engine
+-- shows and hides its own button. Kept as a no-op counter so /na diag can still say
+-- the mode is alive, and so the shape is here if a future build needs it.
+-- Nothing to refresh. The inversion is done by stacking and the engine shows and
+-- hides its own button, so this only keeps a counter for /na diag.
+--
+-- It used to drive our icon's alpha from a secret boolean, which made a satisfied
+-- spell vanish outright rather than be covered. That is gone, and it is worth
+-- recording why so it is not attempted a third time:
+--
+--   * asking the engine's BUTTON whether it is shown is a forbidden object access
+--     in combat - measured, 68 throws to 32
+--   * lending the engine a Cooldown of our own and asking THAT is refused the same
+--     way - measured, 95 throws to 96. Marking a widget with a secret aspect makes
+--     it restricted regardless of who created it
+--
+-- There is no third source. Our icon cannot be a child of the engine's button
+-- either, since that hides it when the aura is ABSENT, which is backwards, and no
+-- filter can match "this aura is not here". Occlusion is the only inversion that
+-- survives combat, and occlusion has to draw something - hence the covered look
+-- being a setting rather than an absence.
+local function RefreshMissing(id)
+    local f = frames[id]
+    if not (f and f.missSlots) then return end
+    local R = NAU.missReport
+    R.runs = R.runs + 1
+    R.lastInCombat = InCombatLockdown() and true or false
+end
+NAU.RefreshMissing = RefreshMissing
+
+local function EnsureMissing(id, index, spellID)
+    local f = frames[id]
+    local g = NAU.db.groups[id]
+    local c = EnsureContainer(id)
+    if not c then return nil end
+
+    f.missSlots = f.missSlots or {}
+    f.missIcons = f.missIcons or {}
+    f.missSpell = f.missSpell or {}
+
+    if not f.missSlots[index] then
+        local key = "naum" .. id .. "s" .. index
+        local ok, button = pcall(c.AddAuraSlot, c, key, FilterString(g), {
+            candidateFilters = spellID and { includeSpellIDs = NAU.ExpandSpellIDs({ spellID }) }
+                                       or DORMANT,
+        })
+        if not (ok and button) then
+            NAU.groupReport["AddAuraSlot(missing)" .. index] = "FAILED: " .. tostring(button)
+            return nil
+        end
+        -- The slot is a real, VISIBLE icon that sits directly on top of our missing
+        -- icon and covers it.
+        --
+        -- The first attempt asked the button whether it was shown and drove our
+        -- alpha from the answer. That works out of combat and is forbidden in it -
+        -- "Attempt to access forbidden object" - so the icons froze at whatever they
+        -- last were, in a fight, which is the only time they matter.
+        --
+        -- Nothing is asked now. The engine shows its button when the aura is present
+        -- and hides it when it is not, entirely on its own; ours is underneath, so
+        -- presence covers it and absence reveals it. An opaque backing texture is
+        -- what makes that a clean swap rather than two icons bleeding through each
+        -- other.
+        pcall(button.SetSize, button, g.size or 32, g.size or 32)
+        if not button._nugsMissBuilt then
+            button._nugsMissBuilt = true
+
+            -- An opaque backing FIRST, so whatever the engine draws on top of it
+            -- completely hides the placeholder underneath. Without this the two
+            -- icons bleed through each other and the swap reads as a rendering bug.
+            local bg = button:CreateTexture(nil, "BACKGROUND")
+            bg:SetAllPoints()
+            bg:SetColorTexture(0, 0, 0, 1)
+            button._nugsCover = { bg = bg }
+
+            -- Then the ordinary treatment - icon, swipe, timer, stacks - so a spell
+            -- that IS applied is tracked exactly like it would be in any other
+            -- group. That is the whole shape of this mode: the listed spells always
+            -- hold their positions, showing a placeholder until they land and a live
+            -- aura once they have.
+            BuildRegions(button, g)
+        end
+        f.missSlots[index] = button
+        f.missSpell[index] = spellID
+    else
+        -- Re-applied EVERY pass, not only when the listed spell changes.
+        --
+        -- Swapping targets left the engine's icons up as though the dots were still
+        -- there. The container is told SetUnit("target") on the change, but it was
+        -- already "target" - the token has not changed, only what it points at - so
+        -- nothing re-evaluates and the button carries on showing what it matched on
+        -- the previous mob.
+        --
+        -- Re-setting the candidate filters forces that re-evaluation. This only runs
+        -- when something has actually happened - an aura event or a target change -
+        -- so it is not a poll.
+        pcall(c.SetAuraSlotCandidateFilters, c, "naum" .. id .. "s" .. index,
+              spellID and { includeSpellIDs = NAU.ExpandSpellIDs({ spellID }) } or DORMANT)
+        f.missSpell[index] = spellID
+    end
+
+    -- Our icon. Entirely ours - a plain frame parented to the group frame - so every
+    -- ordinary setter works on it and none of the engine's restrictions apply.
+    local icon = f.missIcons[index]
+    if not icon then
+        icon = CreateFrame("Frame", nil, f)
+        icon.border = icon:CreateTexture(nil, "BACKGROUND")
+        icon.tex = icon:CreateTexture(nil, "ARTWORK")
+        icon.tex:SetAllPoints()
+        f.missIcons[index] = icon
+    end
+    -- Ours goes UNDERNEATH the engine's, which is the whole mechanism. The container
+    -- holds every engine button, so lifting it once puts all of them above every
+    -- missing icon; without this the two draw in creation order and the cover is a
+    -- coin toss.
+    icon:SetFrameLevel(f:GetFrameLevel() + 1)
+    pcall(c.SetFrameLevel, c, f:GetFrameLevel() + 10)
+
+    -- The sensor is parked directly over its icon, so presence hides absence.
+    local slot = f.missSlots[index]
+    if slot then
+        pcall(slot.ClearAllPoints, slot)
+        pcall(slot.SetPoint, slot, "TOPLEFT", icon, "TOPLEFT", 0, 0)
+        pcall(slot.SetSize, slot, g.size or 32, g.size or 32)
+    end
+
+    local info = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(spellID)
+    icon.tex:SetTexture(info and info.iconID or "Interface\\Icons\\INV_Misc_QuestionMark")
+    icon.tex:SetTexCoord(g.zoomIcon and 0.07 or 0, g.zoomIcon and 0.93 or 1,
+                         g.zoomIcon and 0.07 or 0, g.zoomIcon and 0.93 or 1)
+    icon.tex:SetDesaturated(g.missingDesat and true or false)
+    local t = g.missingTint or { 1, 0.35, 0.35, 1 }
+    icon.tex:SetVertexColor(t[1], t[2], t[3])
+
+    if g.missingBorder then
+        local s = g.borderSize or 1
+        icon.border:ClearAllPoints()
+        icon.border:SetPoint("TOPLEFT", -s, s)
+        icon.border:SetPoint("BOTTOMRIGHT", s, -s)
+        icon.border:SetColorTexture(t[1], t[2], t[3], t[4] or 1)
+        icon.border:Show()
+    else
+        icon.border:Hide()
+    end
+
+    icon:Show()
+    return icon
+end
+
 -- The unordered pile: one managed group, the engine lays it out and compacts it as
 -- auras come and go. Growth and perRow are deliberately not applied here - the
 -- engine's group layout exposes elementSpacing and nothing else, and quietly
@@ -1655,6 +1953,8 @@ function Display:UpdateGroup(id)
         -- The engine is parked while samples are up, so the two cannot be on screen
         -- together. Its filters are restored by the normal path below as soon as
         -- testing stops.
+        -- The always-show placeholders too, or samples land on top of them.
+        ParkMissing(id, f.container)
         if f.container then
             if f.groupBuilt then
                 pcall(f.container.SetAuraGroupCandidateFilters, f.container, "main", DORMANT)
@@ -1703,13 +2003,61 @@ function Display:UpdateGroup(id)
     end
     -- A container does not follow a unit token: when target or focus repoints, the
     -- same container is now watching somebody else and has to be told.
+    --
+    -- And telling it the SAME token is not enough. "target" is still "target" after
+    -- you swap mobs, so re-setting it changes nothing and the engine carries on
+    -- displaying what it matched on the last one. The unit is cleared first, which
+    -- makes the re-set a real change and forces a re-evaluation.
     if c.SetUnit then
         local okU, errU = pcall(c.SetUnit, c, g.unit)
         NAU.groupReport.SetUnit = okU and ("ok (" .. tostring(g.unit) .. ")")
                                        or ("FAILED: " .. tostring(errU))
+        local stamp = NAU.unitStamp and NAU.unitStamp[g.unit] or 0
+        if f.lastUnitStamp ~= stamp then
+            pcall(c.SetUnit, c, "none")
+            pcall(c.SetUnit, c, g.unit)
+            f.lastUnitStamp = stamp
+        end
     else
         NAU.groupReport.SetUnit = "MISSING - container has no SetUnit method"
     end
+
+    -- "Only what is missing" - our icons, alpha-driven inverse off engine slots.
+    local missing = MissingSpells(g)
+    if missing then
+        g._path = "always-show (" .. #missing .. " listed)"
+        local n = math.min(#missing, g.maxCount or #missing)
+        for i = 1, n do
+            local icon = EnsureMissing(id, i, missing[i])
+            if icon then PlaceButton(g, icon, i, f) end
+        end
+        -- Surplus icons from a shortened list, and the sensors behind them.
+        for i = n + 1, #(f.missIcons or {}) do
+            if f.missIcons[i] then f.missIcons[i]:Hide() end
+            if f.missSpell and f.missSpell[i] then
+                pcall(c.SetAuraSlotCandidateFilters, c, "naum" .. id .. "s" .. i, DORMANT)
+                f.missSpell[i] = nil
+            end
+        end
+        -- Nothing else may be drawing into this container.
+        if f.groupBuilt then
+            pcall(c.SetAuraGroupCandidateFilters, c, "main", DORMANT)
+        end
+        f.shown = n
+        RefreshMissing(id)
+        -- The first pass runs before the engine has bound anything, so the alphas are
+        -- all "absent" whatever the truth is. One re-apply a moment later settles it;
+        -- UNIT_AURA keeps it right from then on.
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0.1, function() RefreshMissing(id) end)
+        end
+        f:Show()
+        return
+    end
+
+    -- Not in that mode, so anything it left behind comes down before another path
+    -- draws over the top of it.
+    ParkMissing(id, c)
 
     -- "Only these" runs through the GROUP path, not slots.
     --
@@ -2222,8 +2570,13 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "UNIT_AURA" then
         Touch(arg1)
     elseif event == "PLAYER_TARGET_CHANGED" then
+        -- Counted rather than compared. Knowing the unit CHANGED is all that is
+        -- needed, and the alternatives - a GUID or a name - can both be secret on the
+        -- units this matters for.
+        NAU.unitStamp.target = (NAU.unitStamp.target or 0) + 1
         Touch("target")
     elseif event == "PLAYER_FOCUS_CHANGED" then
+        NAU.unitStamp.focus = (NAU.unitStamp.focus or 0) + 1
         Touch("focus")
     elseif event == "UNIT_PET" then
         Touch("pet")

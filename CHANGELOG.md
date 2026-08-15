@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.7.8
+
+- **The font setting is a list you scroll, not a button you click through.** It was
+  cycling one font per press, which is fine for four options and unusable for the
+  hundred a LibSharedMedia user has - there was no way to see what was available.
+  Every name is drawn in its own face, and one that will not load says so rather
+  than being offered and then not drawing.
+
+## 0.7.7
+
+**New spell-list mode: "Always show these".**
+
+Every listed spell keeps its own position, permanently. While it is not on the unit
+it shows as a tinted placeholder; the moment it lands the game draws it properly,
+with swipe, timer and stacks like any other group. Point one at your target, list
+your dots, and what is dull is what you still owe - the row never moves, so you read
+it by brightness rather than by counting icons.
+
+- Placeholder greying, tint and border are all per group. It wants to be obviously
+  different from the live icon that replaces it, since that contrast is the feature.
+- Categories are ignored in this mode, as they are in "Only these" - the list is the
+  whole filter.
+
+This started out trying to make an icon *disappear* once its aura landed, which is
+not something an addon can do during a fight. Knowing whether the game has drawn
+something means asking it, and every route to that answer is refused in combat: the
+engine's own button, and a widget of ours the engine has marked, both raise
+"attempt to access forbidden object". Covering one icon with another is the only
+inversion that survives - so the mode was rebuilt around it rather than against it,
+and is better for it.
+
+## 0.6.34
+
+- `/na diag` reports whether a named spell can be READ off the group's unit right
+  now, and whether you are in combat. Groundwork for a "missing auras" display:
+  absence cannot come from the aura engine, only from a read coming back empty, and
+  whether that read is served on a target mid-fight has never been measured.
+
+## 0.6.33
+
+- **New: "Swipe the other way".** The cooldown swipe ran only one way round - the
+  dark wedge covering what was left and shrinking away, so the icon got brighter as
+  the aura expired. It can now be inverted, so the icon starts clear and darkens as
+  time is spent, which is how most cooldown displays read. Per group, off by default
+  so nothing already set up changes.
+
 ## 0.6.32
 
 - Grouped under a **nugsAddons** category in the game's AddOns list, so the whole

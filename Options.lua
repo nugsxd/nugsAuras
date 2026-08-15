@@ -601,6 +601,202 @@ local function ScrollArea(parent)
 end
 
 --------------------------------------------------------------------------------
+-- Media picker
+--
+-- A scrolling list, not a cycling button. The font control used to step through the
+-- list one press at a time, which is fine for four options and unusable for the
+-- hundred-odd a LibSharedMedia user has - there is no way to see what is available,
+-- and reaching the end means clicking past everything in front of it.
+--
+-- Every name is drawn IN ITS OWN FACE, because a font list written in one font tells
+-- you nothing about any of them.
+--
+-- Ported from nugsBuffAlert, which already had this. The behaviour it brings with it
+-- was worked out the hard way and is the same in every nugs window: closes on a click
+-- away, closes on Escape without also closing the window behind it, opens upwards
+-- when there is no room below, and never outlives the panel that owns it.
+--------------------------------------------------------------------------------
+
+local POPUP_BG = { 0.06, 0.07, 0.09, 0.97 }
+
+local function PopupChrome(frame)
+    Backdrop(frame, POPUP_BG, 1)
+    for _, p in ipairs({ { "TOPLEFT", "TOPRIGHT", "h" }, { "BOTTOMLEFT", "BOTTOMRIGHT", "h" },
+                         { "TOPLEFT", "BOTTOMLEFT", "v" }, { "TOPRIGHT", "BOTTOMRIGHT", "v" } }) do
+        local edge = frame:CreateTexture(nil, "OVERLAY")
+        edge:SetPoint(p[1]); edge:SetPoint(p[2])
+        if p[3] == "h" then edge:SetHeight(1) else edge:SetWidth(1) end
+        edge:SetColorTexture(0.35, 0.72, 1.00, 0.55)
+    end
+end
+
+-- Shared behaviour for every floating list: closes when you click away from it,
+-- closes on Escape, and never outlives the window it belongs to.
+--
+-- There is no "clicked anywhere" event, so the outside click is caught by a full
+-- screen button underneath the popup, shown and hidden with it. It swallows the click
+-- that dismisses - first click closes, second one acts - which is how every dropdown
+-- in the game behaves, Blizzard's included.
+local function AttachPopupBehaviour(popup)
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:RegisterForClicks("AnyUp")
+    catcher:Hide()
+    catcher:SetScript("OnClick", function() popup:Hide() end)
+
+    -- Escape closes the list rather than the window behind it. Propagation is left on
+    -- for every other key, so this never swallows movement or typing; it is turned off
+    -- only for the Escape actually being handled.
+    popup:EnableKeyboard(true)
+    SafePropagate(popup, true)
+    popup:SetScript("OnKeyDown", function(self, key)
+        if key == "ESCAPE" and not InCombatLockdown() then
+            SafePropagate(self, false)
+            self:Hide()
+        else
+            SafePropagate(self, true)
+        end
+    end)
+
+    -- The owner is read back from the popup's own SetPoint rather than passed in, so
+    -- this works for every caller without any of them having to remember to say who
+    -- owns them. IsVisible is false when any ancestor is hidden, which is exactly the
+    -- case being watched for - a popup orphaned by its panel closing underneath it.
+    local function WatchOwner(self)
+        if self.owner and not self.owner:IsVisible() then self:Hide() end
+    end
+
+    popup:HookScript("OnShow", function(self)
+        local _, relativeTo = self:GetPoint(1)
+        self.owner = relativeTo
+        self:SetScript("OnUpdate", WatchOwner)
+        catcher:SetFrameStrata(self:GetFrameStrata())
+        catcher:SetFrameLevel(110)
+        self:SetFrameLevel(120)
+        catcher:Show()
+    end)
+    popup:HookScript("OnHide", function(self)
+        self:SetScript("OnUpdate", nil)
+        SafePropagate(self, true)
+        catcher:Hide()
+    end)
+    return popup
+end
+
+-- Drops down if there is room and opens upwards if there is not. Clamping alone would
+-- slide the list over the button that opened it, hiding the thing being changed.
+local function PlacePopup(popup, anchorTo)
+    popup:ClearAllPoints()
+    local below = (anchorTo:GetBottom() or 0) - popup:GetHeight()
+    if below < 20 then
+        popup:SetPoint("BOTTOMLEFT", anchorTo, "TOPLEFT", 0, 2)
+    else
+        popup:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -2)
+    end
+    popup:Show()
+end
+
+local function EnsurePopup(existing, width, height)
+    if existing then return existing end
+    local popup = CreateFrame("Frame", nil, UIParent)
+    popup:SetSize(width, height)
+    popup:SetFrameStrata("FULLSCREEN_DIALOG")
+    popup:EnableMouse(true)
+    popup:SetClampedToScreen(true)
+    PopupChrome(popup)
+    popup.scroll = ScrollArea(popup)
+    popup.scroll:SetPoint("TOPLEFT", 5, -5)
+    popup.scroll:SetPoint("BOTTOMRIGHT", -5, 5)
+    popup.rows = {}
+    AttachPopupBehaviour(popup)
+    return popup
+end
+
+-- `style` is handed each row so the font list can draw every name in its own face.
+local function FillPopup(popup, entries, onPick, style)
+    local content = popup.scroll.content
+    -- Width from the popup's own SetSize, NOT from scroll:GetWidth(). The scroll is
+    -- sized by anchors, so on the very first call - the frame having been created
+    -- microseconds earlier with no layout pass yet - it measures 0, every row is built
+    -- zero-wide, and the list looks empty until you click a second time.
+    content:SetWidth(popup:GetWidth() - 10)
+
+    for index, entry in ipairs(entries) do
+        local row = popup.rows[index]
+        if not row then
+            row = CreateFrame("Button", nil, content)
+            row:SetHeight(22)
+            row:SetPoint("TOPLEFT", 0, -(index - 1) * 22)
+            row:SetPoint("TOPRIGHT", 0, -(index - 1) * 22)
+            row.stripe = row:CreateTexture(nil, "BACKGROUND")
+            row.stripe:SetAllPoints()
+            row.stripe:SetColorTexture(1, 1, 1, 0)
+            row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.label:SetPoint("LEFT", 6, 0)
+            row.label:SetPoint("RIGHT", -6, 0)
+            row.label:SetJustifyH("LEFT")
+            row.label:SetWordWrap(false)
+            row:SetScript("OnEnter", function(self) self.stripe:SetColorTexture(unpack(C.rowB)) end)
+            row:SetScript("OnLeave", function(self) self.stripe:SetColorTexture(1, 1, 1, 0) end)
+            popup.rows[index] = row
+        end
+
+        row.label:SetFontObject("GameFontHighlightSmall")
+        row.label:SetText(entry.name)
+        if style then style(row, entry) end
+        row:SetScript("OnClick", function()
+            onPick(entry)
+            popup:Hide()
+        end)
+        row:Show()
+    end
+
+    for index = #entries + 1, #popup.rows do popup.rows[index]:Hide() end
+
+    content:SetHeight(math.max(1, #entries * 22))
+    popup.scroll:SetVerticalScroll(0)
+    popup.scroll:UpdateBar()
+end
+
+local fontPopup
+
+local function ToggleFontPicker(anchorTo, onPick)
+    if fontPopup and fontPopup:IsShown() then fontPopup:Hide() return end
+    fontPopup = EnsurePopup(fontPopup, 232, 268)
+    FillPopup(fontPopup, NAU.FontList(), function(entry) onPick(entry.name) end,
+        function(row, entry)
+            -- Previewed in the font itself, and named as unavailable rather than
+            -- silently drawn in the default face if the file will not load - a name
+            -- you can pick that then does not draw is worse than not offering it.
+            local ok, applied = pcall(row.label.SetFont, row.label, entry.path, 13, "")
+            if not ok or applied == false then
+                row.label:SetFontObject("GameFontHighlightSmall")
+                row.label:SetText(entry.name .. " |cff888888(unavailable)|r")
+            end
+        end)
+    PlacePopup(fontPopup, anchorTo)
+end
+
+-- A button that reads "Font: Friz Quadrata TT" and opens the list.
+local function MediaButton(parent, prefix, getter, onOpen)
+    local holder = CreateFrame("Frame", nil, parent)
+    holder:SetHeight(ROW_H)
+
+    local btn
+    btn = Button(holder, "", 100, ROW_H, function() onOpen(btn) end)
+    btn:SetPoint("LEFT", 0, 0)
+    btn:SetPoint("RIGHT", 0, 0)
+
+    holder.Refresh = function()
+        local v = getter()
+        if v == nil or v == "" then v = "none" end
+        btn:SetLabel(prefix .. ": " .. tostring(v))
+    end
+    sink[#sink + 1] = holder
+    return holder
+end
+
+--------------------------------------------------------------------------------
 -- Column layout
 -- Widgets declare when they are relevant (`show`), and the column re-flows around
 -- whatever is hidden. That is what lets one panel serve a group driven by tokens
@@ -958,6 +1154,31 @@ function BUILDERS.look(p)
         function(v) G().showSwipe = v end,
         "The dark sweep counting the aura down. Driven by the client, so it stays accurate even when the addon cannot read the time."), ROW_H)
 
+    L:Add(Check(content, "Swipe the other way",
+        function() return G() and G().reverseSwipe end,
+        function(v) G().reverseSwipe = v end,
+        "Off: the dark wedge covers what is left and shrinks away, so the icon gets brighter as the aura runs out. On: the icon starts clear and darkens as time is spent, the way most cooldown displays read."),
+        ROW_H, function() local g = G() return g and g.showSwipe end)
+
+    -- Only meaningful in "Only what is missing", and hidden otherwise rather than
+    -- sitting there doing nothing on every other group.
+    local isMissing = function() local g = G() return g and g.spellMode == "missing" end
+
+    L:Add(Check(content, "Grey out the placeholder",
+        function() return G() and G().missingDesat end,
+        function(v) G().missingDesat = v end,
+        "The placeholder should not be mistakable for the live aura that replaces it - the whole point is telling at a glance which of your dots are still owed."),
+        ROW_H, isMissing)
+
+    L:Add(Swatch(content, "Placeholder tint",
+        function() return G() and G().missingTint end, true), ROW_H, isMissing)
+
+    L:Add(Check(content, "Border on the placeholder",
+        function() return G() and G().missingBorder end,
+        function(v) G().missingBorder = v end,
+        "In the same colour as the tint."), ROW_H, isMissing)
+
+
     L:Add(Check(content, "Dim auras that are not mine",
         function() return G() and G().desatOthers end,
         function(v) G().desatOthers = v end), ROW_H)
@@ -995,15 +1216,17 @@ function BUILDERS.look(p)
         function(v) G().stackMin = v end, "%d"), 42,
         function() local g = G() return g and g.showStacks end)
 
-    R:Add(Choice(content, "Font", function()
-            local out = {}
-            for _, entry in ipairs(NAU.FontList()) do
-                out[#out + 1] = { key = entry.name, label = entry.name }
-            end
-            return out
-        end,
+    -- A list, not a cycling button. Stepping through a hundred LibSharedMedia fonts
+    -- one press at a time is not a control, and it never showed what was available.
+    R:Add(MediaButton(content, "Font",
         function() return G() and G().font end,
-        function(v) G().font = v end), 26, textOn)
+        function(btn)
+            ToggleFontPicker(btn, function(name)
+                G().font = name
+                Apply()
+                NAU.RefreshOptions()
+            end)
+        end), ROW_H, textOn)
 
     R:Add(Slider(content, "Font size", 6, 24, 1,
         function() return G() and G().fontSize or 12 end,
@@ -1080,7 +1303,17 @@ function BUILDERS.spells(p)
     L:Hint("|cffffd479Only these|r shows nothing but the spells you list, and |cffffd479ignores the\n" ..
            "Categories on the Look tab|r - the list is the whole filter.\n" ..
            "|cffffd479All but these|r hides the listed spells from whatever the categories let through.\n" ..
-           "|cffffd479Off|r ignores the list entirely and the categories decide.")
+           "|cffffd479Off|r ignores the list entirely and the categories decide.\n" ..
+           "|cffffd479Always show these|r keeps every listed spell on screen - read on.")
+
+    L:Hint("Every listed spell keeps its own position, always. While it is |cffffd479not|r on the\n" ..
+           "unit it shows as a tinted placeholder; the moment it lands the game draws it\n" ..
+           "properly, with its swipe, timer and stacks like any other group.\n\n" ..
+           "Point it at |cffffd479target|r or |cffffd479focus|r and list your dots: what is dull is what you\n" ..
+           "still owe, what is lit is ticking, and the row never moves.\n\n" ..
+           "|cff888888Categories are ignored here, as they are in 'Only these' - the list is\n" ..
+           "the whole filter.|r",
+        function() local g = G() return g and g.spellMode == "missing" end)
 
     L:Hint("Each listed spell holds its own slot, so an inactive one leaves a gap\n" ..
            "rather than shuffling the rest along. That fixed order is the point.",

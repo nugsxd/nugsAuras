@@ -172,6 +172,9 @@ NAU.SPELL_MODES = {
     { key = "off",     label = "Off"         },
     { key = "only",    label = "Only these"  },
     { key = "exclude", label = "All but these" },
+    -- The inverse of the other three: an icon for every listed spell that is NOT on
+    -- the unit, disappearing as each one lands. A dot reminder rather than a tracker.
+    { key = "missing", label = "Always show these" },
 }
 
 -- Builds the pipe-joined filter string the client expects, e.g.
@@ -241,6 +244,20 @@ NAU.groupDefaults = {
     showIcon      = true,
     zoomIcon      = true,     -- crop the icon border rather than show it
     showSwipe     = true,
+    -- Which way round the swipe runs. Off is Blizzard's default: the dark wedge
+    -- covers what is left and shrinks away, so the icon brightens as the aura
+    -- expires. On inverts it - the icon starts clear and darkens as time runs out,
+    -- which is what most cooldown displays do and reads as "draining" rather than
+    -- "filling". Left off by default so nobody's existing groups change look.
+    reverseSwipe  = false,
+
+    -- "Only what is missing" look. A missing icon has to be distinguishable at a
+    -- glance from a real aura, because both kinds of group can be on screen at once
+    -- and they mean opposite things.
+    missingDesat  = true,                       -- grey the icon out
+    missingTint   = { 1, 0.35, 0.35, 1 },       -- and wash it with a colour
+    missingBorder = true,                       -- border in the same colour
+
     showTimer     = true,
     showStacks    = true,
     stackMin      = 2,        -- stacks below this are not worth the clutter
@@ -386,7 +403,8 @@ end
 -- a group a different group, and overwriting them would merge rather than restyle.
 local LOOK_KEYS = {
     "growth", "size", "spacing", "perRow", "maxCount", "scale",
-    "showIcon", "zoomIcon", "showSwipe", "showTimer", "showStacks",
+    "showIcon", "zoomIcon", "showSwipe", "reverseSwipe", "showTimer", "showStacks",
+    "missingDesat", "missingTint", "missingBorder",
     "stackMin", "stackMax", "showBorder", "borderSize",
     "desatOthers", "font", "fontSize", "fontOutline",
     "hideWhenEmpty", "onlyInCombat",
@@ -875,6 +893,19 @@ function NAU.Diagnose()
 
         -- Where everything actually is. Reached only when the engine says it built
         -- frames, since that is the case where the screen and the addon disagree.
+        -- The missing-icons path, when this group uses it. Each counter separates a
+        -- different reason the icons might be stuck: never refreshed, the read
+        -- refused, or the alpha sink refusing the value.
+        if g.spellMode == "missing" and NAU.missReport then
+            local R = NAU.missReport
+            print(string.format(
+                "      missing icons: %d refresh(es), IsShown %d ok / %d threw, alpha %d ok / %d threw",
+                R.runs, R.isShownOK, R.isShownThrew, R.sinkOK, R.sinkThrew))
+            print(string.format("      last refresh was in combat: %s%s",
+                tostring(R.lastInCombat),
+                R.lastErr and ("  |cffff8080" .. R.lastErr .. "|r") or ""))
+        end
+
         if NAU.SlotReport then
             for _, line in ipairs(NAU.SlotReport(id) or {}) do print("      " .. line) end
         end
@@ -909,6 +940,34 @@ function NAU.Diagnose()
             -- checked against reality rather than against our assumptions. This is
             -- what catches a *cast* id entered where the aura carries another one,
             -- which is the most common way a spell list ends up showing nothing.
+            -- Can this unit be asked about a NAMED spell right now?
+            --
+            -- This is the question a "missing auras" display rests on. Absence cannot
+            -- be shown by the engine - it draws auras that exist and has no binding
+            -- for one that does not - so it has to come from a by-id read coming back
+            -- empty. That read survives combat on the player, measured. On a target
+            -- it is unmeasured, and if it is refused mid-fight then every dot would
+            -- read as missing the moment a pull starts.
+            --
+            -- The catch is that "refused" and "genuinely absent" are the same nil, so
+            -- no single reading settles it. Run this with a dot definitely ticking,
+            -- once out of combat and once in, and compare the two lines.
+            local UA = C_UnitAuras or {}
+            if UA.GetUnitAuraBySpellID then
+                local present, absent, threw = 0, 0, 0
+                for _, spellID in ipairs(g.spellOrder or {}) do
+                    if g.spells[spellID] then
+                        local ok, aura = pcall(UA.GetUnitAuraBySpellID, g.unit, spellID)
+                        if not ok then threw = threw + 1
+                        elseif aura then present = present + 1
+                        else absent = absent + 1 end
+                    end
+                end
+                print(string.format(
+                    "      by-id read on %s: %d present, %d absent, %d threw  |cff888888(in combat: %s)|r",
+                    g.unit, present, absent, threw, tostring(InCombatLockdown() and true or false)))
+            end
+
             local liveMap = NAU.AuraMapBySpellID(g, g.unit)
             local matched, unmatched = 0, {}
 
