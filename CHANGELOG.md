@@ -1,7 +1,24 @@
 # Changelog
 
-## 0.7.8
+## 0.7.14
 
+**Your spell list decides the order again.** Each listed spell holds its own
+position, and an inactive one leaves a gap rather than letting the rest shuffle
+along - a fixed row can be read by shape, one that compacts cannot.
+
+- **Fixed: a flood of errors during combat.** Icons were being repositioned on every
+  update, and moving one is only permitted while it is being built. They are placed
+  once now.
+- **Fixed: nothing appeared until you left combat and came back.** With no target at
+  login the display was never built, so the first attempt landed mid-fight - the one
+  moment it cannot be. It is built while you are idle instead.
+- **Fixed: a group could hide itself mid-pull.** Hide-when-empty asked whether your
+  spells were up, could not get a truthful answer during a fight, and took "no" for
+  an answer. It never hides in combat now.
+- **Removed a leftover development tool.** An undocumented command built a hidden
+  aura container and left a timer running five times a second for the rest of the
+  session. It existed to diagnose one problem, that problem is solved, and it had
+  no business being in anybody's client.
 - **The font setting is a list you scroll, not a button you click through.** It was
   cycling one font per press, which is fine for four options and unusable for the
   hundred a LibSharedMedia user has - there was no way to see what was available.

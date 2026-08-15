@@ -730,12 +730,6 @@ SlashCmdList["NUGSAURAS"] = function(msg)
     elseif cmd == "diag" then
         NAU.Diagnose()
 
-    -- Undocumented on purpose: a bisecting tool, not a feature. It stands up the
-    -- simplest container that is known to draw, so "the engine does not work here"
-    -- and "this addon configures it wrongly" stop looking identical.
-    elseif cmd == "enginetest" then
-        NAU.EngineTest()
-
     else
         Usage()
     end
@@ -904,6 +898,12 @@ function NAU.Diagnose()
             print(string.format("      last refresh was in combat: %s%s",
                 tostring(R.lastInCombat),
                 R.lastErr and ("  |cffff8080" .. R.lastErr .. "|r") or ""))
+        end
+
+        -- What hide-when-empty last decided, and on what. "unknown" means the client
+        -- was not answering, which must never hide the group.
+        if g.hideWhenEmpty and NAU.Display.LastAnyUp then
+            print("      hide-when-empty last saw: " .. tostring(NAU.Display:LastAnyUp(id)))
         end
 
         if NAU.SlotReport then

@@ -115,9 +115,20 @@ local function PlaceButton(g, button, index, anchorTo)
         offY = major * step * dir.dy
     end
 
-    button:ClearAllPoints()
-    button:SetPoint(dir.anchor, anchorTo, dir.anchor, offX, offY)
-    button:SetSize(g.size, g.size)
+    -- Guarded, because moving an engine button is not always permitted.
+    --
+    -- Positioning one works when it is created and is refused later - "Attempt to
+    -- access forbidden object" on ClearAllPoints - so calling this on every update
+    -- threw once per slot per pass. 863 errors in one sitting.
+    --
+    -- Slots are therefore placed ONCE, at creation, and everything that would change
+    -- a position - icon size, spacing, growth, per-row - is part of the look
+    -- signature, which rebuilds the container and its slots anyway. A pcall on top,
+    -- because "sometimes permitted" is not a thing to leave unguarded.
+    local ok = pcall(button.ClearAllPoints, button)
+    if not ok then return end
+    pcall(button.SetPoint, button, dir.anchor, anchorTo, dir.anchor, offX, offY)
+    pcall(button.SetSize, button, g.size, g.size)
 end
 
 --------------------------------------------------------------------------------
@@ -933,12 +944,17 @@ local Touch
 -- Rule 2, in one place. Any slot that should currently show nothing points here.
 local DORMANT = { includeSpellIDs = { [599999] = true } }
 
--- AddAuraSlot creates and draws, but a slot given includeSpellIDs never matched an
--- aura across every variation tried. The group path takes the identical id set and
--- works. Until that is understood, "Only these" is built from groups; the slot code
--- is left intact behind this switch rather than deleted, because it is correct as far
--- as it goes and the layout it enables is worth coming back for.
-local SLOTS_WORK = false
+-- Slots are back, and with them the ordering that is the point of "Only these": one
+-- slot per list position, each placed by us, so the row reads in the order you typed
+-- rather than in whatever order the engine sorts.
+--
+-- They were switched off after a slot carrying includeSpellIDs never matched anything
+-- across four attempts. That conclusion was wrong. "Always show these" was later built
+-- on slots and worked immediately, and the difference between the two was one thing:
+-- the broken path passed sortMethod and sortDirection. A slot holds a single aura, so
+-- sorting is meaningless, and supplying it stops the slot matching - silently, since
+-- the options validate.
+local SLOTS_WORK = true
 
 -- Forward-declared: FilterString needs it, and it is defined further down beside the
 -- other spell-list helpers. Without this the name would resolve to a global, read as
@@ -995,153 +1011,16 @@ NAU.groupReport = {}
 -- everything about it is asked for inside a pcall and rendered secret-safe - and its
 -- shown state is never asked for at all, because that is a secret boolean and testing
 -- one is a hard error.
--- A deliberate copy of the throwaway probe that DID draw on screen, run from inside
--- the addon so the two can be compared directly.
---
--- Everything the addon does differently is stripped out: no group frame as a parent,
--- no candidate filters, no spell list, no styling, no icon binding. Just a container
--- on the player with a match-all HELPFUL group, and a flat colour painted onto each
--- button. If these squares appear and a real group does not, the engine is fine and
--- the difference is in how nugsAuras configures it. If they do not appear either,
--- something about this addon's environment differs from the probe's.
---
--- The point is to stop guessing which of a dozen differences matters.
-function NAU.EngineTest()
-    if NAU._engineTest then
-        NAU._engineTest:Hide()
-        NAU._engineTest = nil
-        -- The probe's own furniture lives outside that container, so hiding it is not
-        -- enough - a ticker left running would keep firing forever and the red square
-        -- would sit on screen after the test was switched off.
-        if NAU._missTicker then NAU._missTicker:Cancel(); NAU._missTicker = nil end
-        if NAU._missWatch then NAU._missWatch:UnregisterAllEvents(); NAU._missWatch = nil end
-        if NAU._missTex then NAU._missTex:GetParent():Hide(); NAU._missTex = nil end
-        NAU.Print("engine test off.")
-        return
-    end
-
-    local ok, c = pcall(CreateFrame, "AuraContainer", nil, UIParent, "CustomAuraContainerTemplate")
-    if not (ok and c) then
-        NAU.Print("engine test: could not create a container - " .. tostring(c))
-        return
-    end
-    c:ClearAllPoints()
-    c:SetPoint("CENTER", UIParent, "CENTER", 0, -220)
-    c:SetFrameStrata("HIGH")
-
-    local okU = pcall(c.SetUnit, c, "player")
-
-    local built = 0
-    local okG, err = pcall(c.AddAuraGroup, c, "test", "HELPFUL", {
-        maxFrameCount = 8,
-        layout = { elementSpacing = 4, elementWidth = 40, elementHeight = 40 },
-        initializeFrame = function(button)
-            built = built + 1
-            button:SetSize(40, 40)
-            local t = button:CreateTexture(nil, "OVERLAY")
-            t:SetAllPoints()
-            t:SetColorTexture(0.35, 0.72, 1.00, 0.9)
-        end,
-    })
-
-    -- A SLOT alongside the group, because the two are different code paths and only
-    -- the group was ever proven to draw. A slot returns its button immediately and is
-    -- positioned by us, so if the blue squares appear and the green one does not, the
-    -- fault is in AddAuraSlot rather than in anything about filters or configuration.
-    --
-    -- No candidate filters at all: this takes the first HELPFUL aura on the player,
-    -- whatever it is. If a slot cannot show something when asked for anything, no
-    -- amount of correcting spell ids was ever going to help.
-    local okS, slot = pcall(c.AddAuraSlot, c, "testslot", "HELPFUL", {})
-    if okS and slot then
-        slot:SetSize(40, 40)
-        local t = slot:CreateTexture(nil, "OVERLAY")
-        t:SetAllPoints()
-        t:SetColorTexture(0.35, 1.00, 0.45, 0.9)
-        slot:ClearAllPoints()
-        slot:SetPoint("CENTER", UIParent, "CENTER", 0, -280)
-    end
-
-    -- THE INVERSE TEST. Can a "this aura is MISSING" icon be driven without ever
-    -- reading anything?
-    --
-    -- The engine shows its button when the aura is present. Asking that button
-    -- whether it is shown gives back a SECRET boolean - untestable, but not useless:
-    -- SetAlphaFromBoolean is the display sink for exactly this kind of value, and
-    -- feeding it inverted (0 when shown, 1 when hidden) makes a texture that appears
-    -- precisely when the aura does not.
-    --
-    -- If this works, a missing-auras display needs no aura reads at all, which means
-    -- it works in combat and on a target - the two places a read might be refused.
-    --
-    -- Three things have to hold and each is reported separately, because a failure in
-    -- any one of them means something different:
-    --   1. IsShown on a bound button returns rather than raising a forbidden access
-    --   2. SetAlphaFromBoolean accepts that value
-    --   3. it keeps up as the aura comes and goes (re-applied on UNIT_AURA below)
-    if okS and slot then
-        local holder = CreateFrame("Frame", nil, UIParent)
-        holder:SetSize(40, 40)
-        holder:SetPoint("CENTER", UIParent, "CENTER", 60, -280)
-        holder:SetFrameStrata("HIGH")
-        local miss = holder:CreateTexture(nil, "OVERLAY")
-        miss:SetAllPoints()
-        miss:SetColorTexture(1.00, 0.30, 0.30, 0.9)
-        NAU._missTex = miss
-
-        local function Reapply()
-            local okShown, shown = pcall(slot.IsShown, slot)
-            if not okShown then
-                NAU._missReport = "IsShown FORBIDDEN: " .. tostring(shown)
-                return
-            end
-            if not miss.SetAlphaFromBoolean then
-                NAU._missReport = "SetAlphaFromBoolean missing on this client"
-                return
-            end
-            -- Inverted on purpose: present -> 0, absent -> 1.
-            local okA, errA = pcall(miss.SetAlphaFromBoolean, miss, shown, 0, 1)
-            NAU._missReport = okA and ("ok (secret=" ..
-                tostring(issecretvalue and issecretvalue(shown) or "?") .. ")")
-                or ("SetAlphaFromBoolean THREW: " .. tostring(errA))
-        end
-        Reapply()
-
-        local watch = CreateFrame("Frame")
-        watch:RegisterUnitEvent("UNIT_AURA", "player")
-        watch:SetScript("OnEvent", Reapply)
-        NAU._missWatch = watch
-
-        -- SetAlphaFromBoolean evaluates ONCE, at the moment it is called - it is a
-        -- sink, not a binding. So the alpha only tracks the aura if something
-        -- re-applies it, and UNIT_AURA alone is not enough: the first call runs
-        -- before the engine has bound anything, and if no aura then changes, that
-        -- wrong first answer is the one that stays on screen. Which is exactly what
-        -- the red square did.
-        --
-        -- A ticker here is for the probe, to prove the value really does follow the
-        -- aura. The shipped version would re-apply on UNIT_AURA plus once shortly
-        -- after a group is built, not poll.
-        if C_Timer and C_Timer.NewTicker then
-            NAU._missTicker = C_Timer.NewTicker(0.2, Reapply)
-        end
-        NAU.Print("inverse test: " .. tostring(NAU._missReport))
-        NAU.Print("  RED square right of the green one should be visible only when the "
-                  .. "green one is NOT. Cancel your buffs to check it flips.")
-    end
-
-    NAU._engineTest = c
-    NAU.Print(("engine test: setUnit=%s addGroup=%s frames=%d addSlot=%s")
-              :format(tostring(okU), okG and "ok" or ("FAILED " .. tostring(err)),
-                      built, okS and "ok" or ("FAILED " .. tostring(slot))))
-    NAU.Print("blue squares = groups work. one green square below them = slots work. "
-              .. "|cffffd479/na enginetest|r again to stop.")
-end
 
 -- What each slot is actually filtering on, which is the thing that decides whether
 -- "Only these" shows anything. Reported rather than reasoned about, because a slot
 -- that matches nothing and a slot that was never pointed at a spell look identical
 -- on screen - both are empty.
+function Display:LastAnyUp(id)
+    local f = frames[id]
+    return f and f.lastAnyUp or "not evaluated"
+end
+
 function NAU.SlotReport(id)
     local f = frames[id]
     if not (f and f.slots) then return nil end
@@ -1513,10 +1392,13 @@ local function EnsureSlot(id, index, spellID)
         -- it stayed invisible.
         local filters = spellID and { includeSpellIDs = NAU.ExpandSpellIDs({ spellID }) }
                                  or DORMANT
+        -- NO sortMethod or sortDirection. A slot holds exactly one aura, so sorting
+        -- it means nothing - and passing them appears to stop it matching at all.
+        -- Validation accepts them, so this failed silently and cost several builds
+        -- before "Always show these" turned out to use slots successfully while
+        -- differing in precisely this.
         local ok, button = pcall(c.AddAuraSlot, c, key, FilterString(g), {
             candidateFilters = filters,
-            sortMethod       = SortMethod(g),
-            sortDirection    = SortDirection(g),
         })
         if not (ok and button) then
             NAU.groupReport["AddAuraSlot" .. index] = "FAILED: " .. tostring(button)
@@ -1525,9 +1407,20 @@ local function EnsureSlot(id, index, spellID)
         b = button
         f.slots[index]    = b
         f.slotKeys[index] = key
-        if f.slotSpell then f.slotSpell[index] = spellID end
         BuildRegions(b, g)
-        return b
+
+        -- The remembered spell is deliberately NOT recorded here, so the next pass
+        -- sees a change and re-applies the candidate filters.
+        --
+        -- A slot created during the first update has nothing to match yet - the
+        -- engine has not bound anything to this container - and it does not go back
+        -- and reconsider on its own. The symptom was auras never appearing on a fresh
+        -- pull and then working perfectly once combat dropped and restarted, because
+        -- that round trip forced the pass that should have happened immediately.
+        f.newSlot = true
+        -- The second return says "this one is new", which is the caller's cue to
+        -- place it. Placing happens once and only here.
+        return b, true
     end
 
     -- Re-pointed rather than rebuilt, so changing a spell in the list does not
@@ -1984,6 +1877,28 @@ function Display:UpdateGroup(id)
         if not placing then return end
     end
 
+    -- The container and its slots are built BEFORE the "is the unit there" test, and
+    -- deliberately so.
+    --
+    -- Everything below returns early when there is no target, so with nothing
+    -- selected at login the slots were never created. The first update that reached
+    -- them was the one after you targeted something and opened on it - by which time
+    -- you are in combat, where building and configuring a slot does not take. It then
+    -- worked perfectly the moment combat dropped and restarted, because that was the
+    -- first out-of-combat pass with a target.
+    --
+    -- Built while idle, they are simply waiting when the pull starts.
+    if not InCombatLockdown() and OrderedSpells(g) then
+        local pre = EnsureContainer(id)
+        if pre then
+            local warm = OrderedSpells(g)
+            f.slotSpell = f.slotSpell or {}
+            for i = 1, math.min(#warm, g.maxCount or #warm) do
+                EnsureSlot(id, i, warm[i])
+            end
+        end
+    end
+
     -- UnitName is nil for a unit that is not there, which replaces UnitExists and
     -- its landmine boolean.
     if not UnitName(g.unit) then
@@ -2059,34 +1974,27 @@ function Display:UpdateGroup(id)
     -- draws over the top of it.
     ParkMissing(id, c)
 
-    -- "Only these" runs through the GROUP path, not slots.
+    -- "Only these" is one slot per list position, each placed by us - so the icons
+    -- read in the order you typed them, which is the whole reason for the mode. The
+    -- engine sorts a group; it does not sort a row of individual slots.
     --
-    -- Slots were the natural fit - one per list position, each placed by us, so the
-    -- order on screen is the order in the list. They demonstrably create and draw
-    -- (the engine test puts one on screen), but a slot carrying includeSpellIDs never
-    -- matched anything, through several attempts: parked-then-repointed, pointed at
-    -- creation, expanded ids, single ids. The group path with the very same id set
-    -- works, which is what "All but these" has been doing correctly all along.
-    --
-    -- So this uses the mechanism that is proven rather than the one that ought to
-    -- work. The cost is real and worth stating: the engine sorts these, so the order
-    -- in the spell list no longer decides the order on screen. That is a feature
-    -- regression against a broken alternative, and it is recoverable later - one
-    -- group per position, each with maxFrameCount = 1 in its own container, is the
-    -- same idea built from parts known to work.
+    -- An inactive spell leaves its position empty rather than closing the gap. That
+    -- is deliberate: a fixed row can be read by shape, and one that compacts cannot.
     local ids = SLOTS_WORK and OrderedSpells(g)
     if ids then
         g._path = "ordered slots (" .. #ids .. ")"
         f.slotSpell = f.slotSpell or {}
         local n = math.min(#ids, g.maxCount or #ids)
         for i = 1, n do
-            local b = EnsureSlot(id, i, ids[i])
-            if b then
-                -- No styling here. These are engine buttons and their regions were
-                -- styled inside BuildRegions before being bound; touching them now
-                -- is the forbidden-object error. Position is still ours to set.
-                PlaceButton(g, b, i, f)
-            end
+            local b, fresh = EnsureSlot(id, i, ids[i])
+            -- Placed ONCE, when the slot is built. No styling either: these are
+            -- engine buttons whose regions were styled before being bound, and
+            -- touching any of it afterwards is the forbidden-object error.
+            --
+            -- Everything that could change a position - size, spacing, growth,
+            -- per-row - is in the look signature, which rebuilds the container and
+            -- its slots, so they are placed again as new ones.
+            if b and fresh then PlaceButton(g, b, i, f) end
         end
         -- The category group is parked while slots are driving this group. Both live
         -- on the same container, and a group that was built during an earlier "Off"
@@ -2108,17 +2016,40 @@ function Display:UpdateGroup(id)
         end
         f.shown = n
 
+        -- A slot built this pass has not been given a real chance to match: the
+        -- engine had nothing bound to this container when it was created. One more
+        -- pass a moment later applies its filters properly, which is what dropping
+        -- and re-entering combat was doing by accident.
+        if f.newSlot then
+            f.newSlot = nil
+            if C_Timer and C_Timer.After then
+                C_Timer.After(0.1, function() Display:UpdateGroup(id) end)
+            end
+        end
+
         -- hideWhenEmpty, for spell lists only. The engine owns the buttons and we
         -- may not ask one whether it is shown - that returns a secret boolean and
         -- truth-testing it is a hard error - so emptiness is established the other
         -- way round, by asking the game about the spells we named.
         if g.hideWhenEmpty and not anchorsShown then
             local anyUp = AnyListedSpellUp(g, ids)
-            -- nil means the question could not be answered at all. Showing the frame
-            -- is the right failure: an empty anchor is a cosmetic annoyance, whereas
-            -- hiding a group that actually has auras in it looks like the addon has
-            -- stopped working.
-            f:SetShown(anyUp ~= false)
+            -- Never hides during combat, whatever the read said.
+            --
+            -- The read is the only way to tell "empty" from "not allowed to look",
+            -- and in a fight it cannot tell them apart on any unit - a target
+            -- especially. It answered "nothing is up" for two dots that were
+            -- actually ticking, and hid the whole group; the icons were correct and
+            -- the anchor was not there to show them.
+            --
+            -- So the rule is now the blunt one rather than the clever one: an empty
+            -- anchor out of combat is tidy, and an anchor that vanishes mid-pull is
+            -- the addon breaking. Only a definite "nothing is up", established while
+            -- the client is answering honestly, may hide it.
+            local mayHide = (anyUp == false)
+                            and not InCombatLockdown()
+                            and not (NAU.AurasAreSecret and NAU.AurasAreSecret())
+            f.lastAnyUp = (anyUp == nil) and "unknown" or tostring(anyUp)
+            f:SetShown(not mayHide)
             return
         end
     else
