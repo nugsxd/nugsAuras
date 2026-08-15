@@ -1228,7 +1228,11 @@ local function EnsureContainer(id)
     local sig = LookSignature(g)
     if f.container and f.lookSig ~= sig then
         f.container:Hide()
+        -- slotPlaced goes with them: the new slots are new frames and have never
+        -- been positioned, so carrying the old table over would leave every one of
+        -- them unanchored and invisible.
         f.container, f.slots, f.slotKeys, f.slotSpell = nil, nil, nil, nil
+        f.slotPlaced = nil
         f.groupBuilt, f.initCount, f.firstButton = nil, 0, nil
     end
     f.lookSig = sig
@@ -1417,10 +1421,11 @@ local function EnsureSlot(id, index, spellID)
         -- and reconsider on its own. The symptom was auras never appearing on a fresh
         -- pull and then working perfectly once combat dropped and restarted, because
         -- that round trip forced the pass that should have happened immediately.
+        -- Flags the group for one more pass shortly after, so the filters get applied
+        -- once the engine has something to bind. Placement is NOT keyed off this -
+        -- see slotPlaced in UpdateGroup for why that broke.
         f.newSlot = true
-        -- The second return says "this one is new", which is the caller's cue to
-        -- place it. Placing happens once and only here.
-        return b, true
+        return b
     end
 
     -- Re-pointed rather than rebuilt, so changing a spell in the list does not
@@ -1986,15 +1991,25 @@ function Display:UpdateGroup(id)
         f.slotSpell = f.slotSpell or {}
         local n = math.min(#ids, g.maxCount or #ids)
         for i = 1, n do
-            local b, fresh = EnsureSlot(id, i, ids[i])
-            -- Placed ONCE, when the slot is built. No styling either: these are
-            -- engine buttons whose regions were styled before being bound, and
-            -- touching any of it afterwards is the forbidden-object error.
+            local b = EnsureSlot(id, i, ids[i])
+            -- Placed ONCE, tracked by whether THIS slot has been placed - not by
+            -- whether this call happened to create it.
             --
-            -- Everything that could change a position - size, spacing, growth,
-            -- per-row - is in the look signature, which rebuilds the container and
-            -- its slots, so they are placed again as new ones.
-            if b and fresh then PlaceButton(g, b, i, f) end
+            -- Keying off "did I just create it" broke the display completely: the
+            -- warm-up pass above creates the slots while idle and discards the
+            -- return, so by the time this ran they already existed, nothing was ever
+            -- placed, and every icon sat unanchored and invisible. Two changes that
+            -- were each correct alone and cancelled each other out.
+            --
+            -- Placing once is still the rule: moving an engine button is only
+            -- permitted while it is being built. Anything that would change a
+            -- position is in the look signature, which rebuilds the container and
+            -- its slots, and this table goes with them.
+            f.slotPlaced = f.slotPlaced or {}
+            if b and not f.slotPlaced[i] then
+                f.slotPlaced[i] = true
+                PlaceButton(g, b, i, f)
+            end
         end
         -- The category group is parked while slots are driving this group. Both live
         -- on the same container, and a group that was built during an earlier "Off"
@@ -2311,6 +2326,13 @@ end
 -- Silent: the options window calls this on every slider tick, so anything chatty
 -- or expensive belongs in ToggleLock.
 function Display:SetLocked(locked)
+    -- The guard lives HERE, not only in ToggleLock, because this is where the state
+    -- actually changes. ToggleLock refuses to unlock in combat and every button and
+    -- slash command goes through it - but "every caller is polite" is not a
+    -- guarantee, it is an assumption, and it only takes one direct call to leave
+    -- drag boxes on screen mid-pull.
+    if not locked and InCombatLockdown() then return end
+
     NAU.db.locked = locked and true or false
     anchorsShown = not NAU.db.locked
 
@@ -2498,7 +2520,22 @@ events:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         NAU.InvalidateTrackedSet()
     end
 
-    if event == "UNIT_AURA" then
+    if event == "PLAYER_REGEN_DISABLED" then
+        -- Locking on a pull belongs HERE, in the display, not only in the options
+        -- window. The window's copy of this can be missed - it is a different file
+        -- with its own state - and this event was already being registered here and
+        -- then handled by nothing, which is the worst of both.
+        --
+        -- Placing groups puts a drag box on every one of them; leaving that up during
+        -- a fight is unusable and looks like the addon has come apart.
+        if NAU.db and not NAU.db.locked then
+            Display:SetLocked(true)
+            if NAU.OnLockChanged then NAU.OnLockChanged(true) end
+            if NAU.RefreshOptions then NAU.RefreshOptions() end
+        end
+        Touch(nil)
+
+    elseif event == "UNIT_AURA" then
         Touch(arg1)
     elseif event == "PLAYER_TARGET_CHANGED" then
         -- Counted rather than compared. Knowing the unit CHANGED is all that is

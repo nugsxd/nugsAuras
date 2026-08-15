@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.16
+
+- **Fixed: anchors could be left unlocked during a fight.** Placing mode puts a drag
+  handle on everything this addon draws, which is unusable mid-pull and looks like
+  the addon has come apart. It was already refused at the button and locked on a
+  pull - but the check sat on the toggle rather than on the function that actually
+  changes the state, so anything calling that directly went straight past it. The
+  guard is now where it cannot be bypassed.
+
 ## 0.7.14
 
 **Your spell list decides the order again.** Each listed spell holds its own
